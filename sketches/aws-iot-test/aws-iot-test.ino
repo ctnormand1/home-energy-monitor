@@ -16,6 +16,7 @@
 #include <ArduinoBearSSL.h>
 #include <ArduinoECCX08.h>
 #include <ArduinoJson.h>
+#include <math.h>
 #include "secrets.h"
 
 // Sampling configuration
@@ -34,8 +35,8 @@ BearSSLClient sslClient(wifiClient);  // Used for SSL/TLS connection
 MqttClient mqttClient(sslClient);
 
 // Initialize JSON resources
-#define JSON_BUFFER_SIZE JSON_ARRAY_SIZE(6) + 6 * JSON_OBJECT_SIZE(2)
-StaticJsonDocument<JSON_BUFFER_SIZE> jsonDoc;
+constexpr int jsonCapacity = JSON_ARRAY_SIZE(6) + 12 * JSON_OBJECT_SIZE(2);
+StaticJsonDocument<jsonCapacity> jsonDoc;
 
 // Initialize counters
 unsigned long lastMillis = 0;
@@ -75,11 +76,14 @@ void loop() {
     }
     
     jsonDoc[sampleIx]["time"] = getTime();
-    jsonDoc[sampleIx]["data"] = random(100, 10000);
+    jsonDoc[sampleIx]["data"]["voltage"] = getVoltage();
+    jsonDoc[sampleIx]["data"]["current"] = getCurrent();
 
     Serial.print((unsigned long)jsonDoc[sampleIx]["time"]);
     Serial.print(": ");
-    Serial.print((int)jsonDoc[sampleIx]["data"]);
+    Serial.print((float)jsonDoc[sampleIx]["data"]["voltage"]);
+    Serial.print(" V, ");
+    Serial.print((int)jsonDoc[sampleIx]["data"]["current"]);
     Serial.println(" W");
     
     sampleIx++;
@@ -130,4 +134,12 @@ void connectMQTT() {
 
 unsigned long getTime() {
   return WiFi.getTime();
+}
+
+int getCurrent() {
+  return random(10, 100);
+}
+
+float getVoltage() {
+  return 118 + random(0, 3) + ((float)random(0, 9) / 10);
 }
