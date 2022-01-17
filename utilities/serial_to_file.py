@@ -32,7 +32,7 @@ def main():
         return
 
     # Start listening
-    ser = Serial(port, baudrate=args.baudrate)
+    ser = Serial(port, baudrate=args.baudrate, timeout=0.5)
     print(f'\nListening on port {port} [Press CTRL-C to quit]')
     print(f'  Baud rate: {ser.baudrate}')
     print(f'  Byte size: {ser.bytesize}')
