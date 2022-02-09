@@ -5,23 +5,39 @@
 
 class CurrentSensor {
   private:
-    byte inPin;
-    float vRef;
-    unsigned int adcBits;
-    unsigned int adcSteps;
 
-    unsigned int latestRead;
-    unsigned int currReadIx;
-    unsigned int oldestReadIx;
-    unsigned int oldestPeakIx;
-    unsigned int prevReads[9];
-    unsigned int avgRead;
-    unsigned int peaks[15];
+    // ADC settings
+    const float vRef = 1.65;  // ADC reference voltage
+    const int adcBits = 12;  // ADC bits
+    const int adcSteps = 1 << 12;  // ADC steps
+
+    // Sampling params
+    const int numSamples = 300;  // For sample rate of 1200 Hz
+    const int smoothingBufferLen = 3;
+    const int extremaRadius = 5;
+    const int extremaBufferLen = 6;
+
+    // Sampling resources
+    int samples[300], smoothingBuffer[3];
+    int extremaBuffer[6];
+    int movingAvgTotal, extremaFlag, extremaCounter, vPeak, numReadings;
+    float centerLine, diff, avgDiff, vPeakAvg, power, vrms, vAvg, cal;
+    long vPeakTotal, readingsTotal;
+    boolean isExtrema;
+
+    // Functions for averaging
+    float average(int arr[], int len);
+    float averageDiff(int arr[], float vCenter, int len);
+
+    // Input pins
+    byte inPin, checkPin;  // inPin = sensor input, checkPin = connector check
 
   public:
-    CurrentSensor(byte inPin, float cal);
+    CurrentSensor(byte inPin, byte checkPin, float cal);
     void init();
-    float readCurrent();
+    boolean getReading();
+    float returnReading();
+    boolean isConnected();
 };
 
 
