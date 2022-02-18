@@ -81,7 +81,7 @@ boolean CurrentSensor::getReading() {
     extremaFlag *= -1;
   }
 
-  readingsTotal += vPeakTotal / extremaCounter;
+  readingsTotal += vPeakTotal / max((extremaCounter - extremaBufferLen), 1);
   numReadings ++;
   return true;
 }
@@ -93,6 +93,11 @@ float CurrentSensor::returnReading() {
   }
   else {
     current = ((float)readingsTotal / numReadings) * vRef * cal * 0.707 / adcSteps;
+    if (current < 2.5) {
+      current = pow(2.7183, (pow(current, 1.8) - pow(2.5, 1.8))) * current;
+    }
+
+
   }
   readingsTotal = 0;
   numReadings = 0;
