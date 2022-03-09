@@ -12,9 +12,10 @@
 #include <CurrentSensor.h>          // Current sensors
 #include <ArduinoJson.h>            // Message formatting
 #include <ArduinoUniqueID.h>        // Device serial number
-//#include <Adafruit_SleepyDog.h>     // Watchdog timer
+#include <Adafruit_SleepyDog.h>     // Watchdog timer
 #include <MemoryFree.h>             // Memory tracking
 
+// Comment
 // Store sensitive info in secrets.h
 #include "secrets.h"
 const char ssid[] = SECRET_SSID;
@@ -33,21 +34,25 @@ QwiicButton button;
 CurrentSensor sensor1(A1, 3, 300);
 CurrentSensor sensor2(A3, 4, 300);
 
-// Initialize JSON resources
-constexpr int jsonCapacity = 750;
-StaticJsonDocument<jsonCapacity> jsonDoc;
-StaticJsonDocument<300> eventDoc;
+constexpr int jsonCapacity = 768;
 
 // State variables
 int wifiState, mqttState, displayState;
 float current1 = -1, current2 = -1;
 int timeOffset = -6;
-unsigned int lastSampleMillis, lastDispUpdateMillis, backlightOnMillis, commWaitingMillis;
+unsigned long lastSampleMillis, lastDispUpdateMillis, backlightOnMillis, commWaitingMillis;
+unsigned long deviceResetMillis, wifiReconnectMillis, mqttReconnectMillis;
 short sampleIx = 0, eventIx = 0, sampleNum = 6;
 bool commEnabled = true, commWaiting = false, backlightOn;
+bool deviceReset = false, wifiReconnect = false, mqttReconnect = false;
 char dispBuffer[17], deviceIDString[17];
+unsigned long measurementTimes[6];
+float readings1[6], readings2[6];
+int freeMem[6];
 
 void setup() {  
+  deviceReset = true;
+  
   // Begin I2C devices
   Wire.begin();
   lcd.begin(Wire);
@@ -91,11 +96,7 @@ void setup() {
   lastSampleMillis = 0;
   backlightOnMillis = millis();
 
-//  Watchdog.enable(10000);  // 10 second watchdog timer
-
-  eventDoc["data"][eventIx]["event_type"] = "DEVICE_RESET";
-  eventDoc["data"][eventIx]["timestamp"] = getTime();
-  eventIx++;
+  Watchdog.enable(16000);  // 16 second watchdog timer
 }
 
 void loop() {
@@ -127,44 +128,43 @@ void loop() {
       commWaitingMillis = millis();
     }
   }
-
-  if (!eventDoc.isNull()) {
-    sendMessage("event", eventDoc);
-    eventIx = 0;
-  }
-
+  
   // Kick the sensors so they take a reading
   sensor1.getReading();
   sensor2.getReading();
 
+  // Record measurements every 5 seconds
   if (millis() - lastSampleMillis > 5000) {    
     current1 = sensor1.returnReading();
     current2 = sensor2.returnReading();
-    jsonDoc["data"][sampleIx]["time"] = getTime();
+    measurementTimes[sampleIx] = getTime();
+    freeMem[sampleIx] = freeMemory();
     if (current1 > 0) {
-      jsonDoc["data"][sampleIx]["sensor_1"] = current1 * 120;
+      readings1[sampleIx] = current1 * 120;
+    } 
+    else {
+      readings1[sampleIx] = current1;
     }
     if (current2 > 0) {
-      jsonDoc["data"][sampleIx]["sensor_2"] = current2 * 120;
+      readings2[sampleIx] = current2 * 120;
+    } 
+    else {
+      readings2[sampleIx] = current2;
     }
-    jsonDoc["data"][sampleIx]["free_memory"] = freeMemory();   
     sampleIx ++;
     lastSampleMillis = millis();
   }
 
+  // Send a message as soon as we have 6 measurements.
   if (sampleIx >= sampleNum) {
-//    jsonDoc["deviceId"] = deviceIDString;
-//    if (mqttClient.connected()) {
-//      mqttClient.beginMessage("smartwatt/outgoing", (unsigned long)measureJson(jsonDoc));
-//      serializeJson(jsonDoc, mqttClient);
-//      mqttClient.endMessage();
-//      Wire.setClock(100000);
-//    }
-//    jsonDoc.clear();
-    sendMessage("sensor_data", jsonDoc);
+    sendMessage();
     sampleIx = 0;
+    deviceReset = false;
+    wifiReconnect =false;
+    mqttReconnect = false;
   }
-  
+
+  // Change display or turn on backlight if button was clicked
   if (button.hasBeenClicked()) {
     button.clearEventBits();
     if (backlightOn) {
@@ -180,19 +180,45 @@ void loop() {
     turnBacklightOff();
   }
 
-//  Watchdog.reset();
+  Watchdog.reset();  // Kick watchdog
+}
+
+void sendMessage() {
+  StaticJsonDocument<jsonCapacity> jsonDoc;
+  jsonDoc["device_id"] = deviceIDString;
+  jsonDoc["msg_timestamp"] = getTime();
+  for (int i = 0; i < sampleNum; i++) {
+    jsonDoc["measurements"]["timestamps"].add(measurementTimes[i]);
+    jsonDoc["measurements"]["sensor_1"].add(readings1[i]);
+    jsonDoc["measurements"]["sensor_2"].add(readings2[i]);
+    jsonDoc["measurements"]["free_mem"].add(freeMem[i]);
+  }
+  if (deviceReset) {
+    jsonDoc["events"]["device_reset"] = getTime() - millis() / 1000;
+  }
+  if (wifiReconnect) {
+    jsonDoc["events"]["wifi_reconnect"] = getTime() - (millis() - wifiReconnectMillis) / 1000;
+  }
+  if (mqttReconnect) {
+    jsonDoc["events"]["mqtt_reconnect"] = getTime() - (millis() - mqttReconnectMillis) / 1000;
+  }
+  if (mqttClient.connected()) {
+    mqttClient.beginMessage("smartwatt/outgoing", (unsigned long)measureJson(jsonDoc));
+    serializeJson(jsonDoc, mqttClient);
+    mqttClient.endMessage();
+  }
 }
 
 boolean connectWiFi() {
   wifiState = 1;
   updateDisplay();
   byte attempts = 0;
-//  Watchdog.disable();
   while ((WiFi.begin(ssid, pass) != WL_CONNECTED) && (attempts < 5)) {
     attempts ++;
+    Watchdog.reset();
     delay(5000);  // On failure, wait 5s and try again
+    Watchdog.reset();
   }
-//  Watchdog.enable(10000);
   if (WiFi.status() != WL_CONNECTED) {
     wifiState = 0;
     updateDisplay();
@@ -200,30 +226,25 @@ boolean connectWiFi() {
   }
   wifiState = 2;
   updateDisplay();
-  eventDoc["data"][eventIx]["event_type"] = "WIFI_CONNECT";
-  eventDoc["data"][eventIx]["timestamp"] = getTime();
-  eventIx ++;
+  wifiReconnect = true;
+  wifiReconnectMillis = millis();
   return true;
 }
 
-
 boolean connectMQTT() {
-  Serial.println("Connecting MQTT");
   if (wifiState == 0) {
     return false;
   }
   mqttState = 1;
   updateDisplay();
   byte attempts = 0;
-//  Watchdog.disable();
   while ((!mqttClient.connect(broker, 8883)) && (attempts < 5)) {
-    Serial.print("Attempt ");
-    Serial.println(attempts);
     attempts ++;
+    Watchdog.reset();
     delay(5000); // On failure, wait 5s and try again
+    Watchdog.reset();
   }
   Wire.setClock(100000);
-//  Watchdog.enable(10000);
 //  connectI2CDevices();
   if (!mqttClient.connected()) {
     mqttState = 0;
@@ -232,9 +253,8 @@ boolean connectMQTT() {
   }
   mqttState = 2;
   updateDisplay();
-  eventDoc["data"][eventIx]["event_type"] = "MQTT_CONNECT";
-  eventDoc["data"][eventIx]["timestamp"] = getTime();
-  eventIx ++;
+  mqttReconnect = true;
+  mqttReconnectMillis = millis();
   return true;
 }
 
@@ -256,22 +276,8 @@ void turnBacklightOff() {
 void disconnectComms() {
   WiFi.end();
   wifiState = 0;
-//  mqttClient.disconnect();
   mqttState = 0;
   updateDisplay();
-}
-
-void sendMessage(char *msgType, JsonDocument& payload) {
-  payload["device_id"] = deviceIDString;
-  payload["timestamp"] = getTime();
-  payload["msg_type"] = msgType;
-  if (mqttClient.connected()) {
-    mqttClient.beginMessage("smartwatt/outgoing", (unsigned long)measureJson(payload));
-    serializeJson(jsonDoc, mqttClient);
-    mqttClient.endMessage();
-    Wire.setClock(100000);
-  }
-  payload.clear();
 }
 
 void updateDisplay() {
